@@ -1,0 +1,64 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Logs
+logs/
+*.log
+*.log.*
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Build / Cache
+dist/
+build/
+.cache/
+.tmp/
+tmp/
+temp/
+.next/
+.out/
+
+# Coverage
+coverage/
+.nyc_output/
+coverage-final.json
+
+# TypeScript
+tsconfig.tsbuildinfo
+
+# Env
+.env
+.env.*
+!.env.example
+
+# SQLite / DB
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*-journal
+*.db-shm
+*.db-wal
+squash.db
+
+# PM2 (repo-local artifacts, if any)
+pm2.log
+pm2.pid
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Cursor / Agent workspace
+.cursor/
+.agent-tools/
+
+
