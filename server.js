@@ -4,6 +4,7 @@ import cors from 'cors';
 import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { InlineKeyboard } from 'grammy';
 
 import db, {
   getOrCreatePlayerByTelegram,
@@ -15,6 +16,7 @@ import db, {
   setMatchStatus,
 } from './db.js';
 import { makePlayer, scoreToOutcome, updateTwoPlayers } from './rating.js';
+import { bot } from './index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -85,7 +87,7 @@ app.get('/api/leaders', requireTgAuth, (req, res) => {
   res.json({ leaders: top });
 });
 
-app.post('/api/matches', requireTgAuth, (req, res) => {
+app.post('/api/matches', requireTgAuth, async (req, res) => {
   const { opponentTelegramId, score } = req.body;
   const me = getOrCreatePlayerByTelegram(req.tgUser);
   const opponent = getPlayerByTelegram(opponentTelegramId);
@@ -98,6 +100,22 @@ app.post('/api/matches', requireTgAuth, (req, res) => {
     authorScore: Number(m[1]),
     opponentScore: Number(m[2]),
   });
+
+  // Send notification to opponent in Telegram
+  const kb = new InlineKeyboard()
+    .text('Подтвердить', `confirm:${created.id}`)
+    .text('Отклонить', `reject:${created.id}`);
+
+  try {
+    await bot.api.sendMessage(
+      opponent.telegram_id,
+      `Игрок ${me.username || me.telegram_id} зарегистрировал игру со счётом ${created.author_score}:${created.opponent_score}. Подтвердить?`,
+      { reply_markup: kb },
+    );
+  } catch (err) {
+    console.error('Failed to send notification to opponent:', err);
+  }
+
   res.json({ match: created });
 });
 

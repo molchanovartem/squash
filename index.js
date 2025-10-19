@@ -20,6 +20,9 @@ if (!BOT_TOKEN) {
 
 const bot = new Bot(BOT_TOKEN);
 
+// Export bot instance for use in server.js
+export { bot };
+
 // simple in-memory session (per chat)
 bot.use(session({ initial: () => ({ step: null, opponentTgId: null }) }));
 
