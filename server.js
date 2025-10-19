@@ -77,7 +77,11 @@ app.get('/api/players', requireTgAuth, (req, res) => {
 });
 
 app.get('/api/leaders', requireTgAuth, (req, res) => {
-  const top = db.prepare('SELECT username, telegram_id, rating, rd FROM players ORDER BY rating DESC, id ASC LIMIT 20').all();
+  const top = db
+    .prepare(
+      'SELECT username, first_name, last_name, telegram_id, rating, rd FROM players ORDER BY rating DESC, id ASC LIMIT 20'
+    )
+    .all();
   res.json({ leaders: top });
 });
 

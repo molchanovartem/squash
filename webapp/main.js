@@ -20,23 +20,30 @@ async function api(path, opts={}){
   return await res.json();
 }
 
+function formatPlayerTitle(p){
+  const fullName = [p.first_name||'', p.last_name||''].join(' ').trim();
+  const base = [fullName, p.username ? '@'+p.username : null].filter(Boolean).join(' ');
+  return (base || ('ID '+p.telegram_id)) + ' · ' + Math.round(p.rating);
+}
+
 async function renderHome(){
-  const { player } = await api('/api/me');
+  const [{ player }, { players }] = await Promise.all([
+    api('/api/me'),
+    api('/api/players'),
+  ]);
+
   content.innerHTML = `
     <div class="card">
       <div class="row"><strong>Ваш рейтинг:</strong> <span>${player.rating.toFixed(1)}</span></div>
       <div class="row"><strong>RD:</strong> <span>${player.rd.toFixed(1)}</span></div>
-    </div>`;
-}
+    </div>
 
-async function renderRegister(){
-  const { players } = await api('/api/players');
-  content.innerHTML = `
     <div class="card">
       <div class="row">
-        <select id="opponent">
-          ${players.map(p=> `<option value="${p.telegram_id}">${p.username? '@'+p.username : 'ID '+p.telegram_id} · ${Math.round(p.rating)}</option>`).join('')}
-        </select>
+        <div class="select" id="opponentSelect">
+          <input id="opponentInput" placeholder="Поиск игроков" autocomplete="off" />
+          <div class="dropdown" id="opponentDropdown"></div>
+        </div>
       </div>
       <div class="row" style="margin-top:8px">
         <input id="score" placeholder="Счёт, например 2:1" />
@@ -45,25 +52,73 @@ async function renderRegister(){
         <button class="primary" id="send">Отправить заявку</button>
       </div>
     </div>`;
+
+  const input = document.getElementById('opponentInput');
+  const dropdown = document.getElementById('opponentDropdown');
+  let selectedTelegramId = null;
+
+  function normalize(s){ return String(s||'').toLowerCase(); }
+  function itemMatches(p, q){
+    if (!q) return true;
+    const qn = normalize(q);
+    return [p.username, p.first_name, p.last_name, p.telegram_id]
+      .map(normalize)
+      .some((v)=> String(v).includes(qn));
+  }
+  function renderOptions(q=''){
+    dropdown.innerHTML = players
+      .filter(p=> itemMatches(p, q))
+      .slice(0, 50)
+      .map(p=> `<div class="option" data-id="${p.telegram_id}">${formatPlayerTitle(p)}</div>`)
+      .join('');
+    dropdown.querySelectorAll('.option').forEach(el=>{
+      el.onclick = ()=>{
+        selectedTelegramId = Number(el.dataset.id);
+        const p = players.find(x=> x.telegram_id === selectedTelegramId);
+        input.value = formatPlayerTitle(p).replace(/\s·\s\d+$/, '');
+        dropdown.parentElement.classList.remove('open');
+      };
+    });
+  }
+
+  input.addEventListener('focus', ()=>{
+    dropdown.parentElement.classList.add('open');
+    renderOptions(input.value);
+  });
+  input.addEventListener('input', ()=>{
+    selectedTelegramId = null;
+    renderOptions(input.value);
+  });
+  document.addEventListener('click', (e)=>{
+    const sel = document.getElementById('opponentSelect');
+    if (!sel.contains(e.target)) sel.classList.remove('open');
+  });
+
+  renderOptions('');
+
   document.getElementById('send').onclick = async ()=>{
-    const opponentTelegramId = Number(document.getElementById('opponent').value);
     const score = document.getElementById('score').value.trim();
+    const opponentTelegramId = selectedTelegramId;
+    if (!opponentTelegramId) return toast('Выберите соперника из списка');
     try {
       await api('/api/matches', { method:'POST', body: JSON.stringify({ opponentTelegramId, score })});
       toast('Заявка отправлена сопернику в чате');
+      input.value = '';
+      selectedTelegramId = null;
     } catch (e){ toast('Ошибка: '+e.message); }
-  }
+  };
 }
+
+// registration moved into Home
 
 async function renderLeaders(){
   const { leaders } = await api('/api/leaders');
-  content.innerHTML = `<div class="list">${leaders.map((p,i)=>`<div class="card">${i+1}. ${p.username? '@'+p.username : 'ID '+p.telegram_id} — ${p.rating.toFixed(1)} (RD ${p.rd.toFixed(0)})</div>`).join('')}</div>`;
+  content.innerHTML = `<div class="list">${leaders.map((p,i)=>`<div class="card">${i+1}. ${formatPlayerTitle(p)} (RD ${p.rd.toFixed(0)})</div>`).join('')}</div>`;
 }
 
 function selectTab(name){
   tabs.forEach((b)=> b.classList.toggle('active', b.dataset.tab===name));
   if (name==='home') renderHome();
-  if (name==='register') renderRegister();
   if (name==='leaders') renderLeaders();
 }
 
