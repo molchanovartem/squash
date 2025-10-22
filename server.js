@@ -18,6 +18,43 @@ import db, {
 import { makePlayer, scoreToOutcome, updateTwoPlayers } from './rating.js';
 import { bot } from './index.js';
 
+async function notifyOpponentWithFallback({ chatId, text, matchId }) {
+  // Try via grammy first
+  try {
+    const kb = new InlineKeyboard()
+      .text('Подтвердить', `confirm:${matchId}`)
+      .text('Отклонить', `reject:${matchId}`);
+    await bot.api.sendMessage(chatId, text, { reply_markup: kb });
+    return { ok: true };
+  } catch (err) {
+    console.error('Grammy send failed:', err?.description || err?.message || err);
+  }
+
+  // Fallback to direct Telegram API call
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        reply_markup: {
+          inline_keyboard: [[
+            { text: 'Подтвердить', callback_data: `confirm:${matchId}` },
+            { text: 'Отклонить', callback_data: `reject:${matchId}` },
+          ]],
+        },
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.description || 'telegram_api_error');
+    return { ok: true };
+  } catch (err) {
+    console.error('HTTP send failed:', err?.message || err);
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -101,22 +138,13 @@ app.post('/api/matches', requireTgAuth, async (req, res) => {
     opponentScore: Number(m[2]),
   });
 
-  // Send notification to opponent in Telegram
-  const kb = new InlineKeyboard()
-    .text('Подтвердить', `confirm:${created.id}`)
-    .text('Отклонить', `reject:${created.id}`);
+  const notifyResult = await notifyOpponentWithFallback({
+    chatId: opponent.telegram_id,
+    text: `Игрок ${me.username || me.telegram_id} зарегистрировал игру со счётом ${created.author_score}:${created.opponent_score}. Подтвердить?`,
+    matchId: created.id,
+  });
 
-  try {
-    await bot.api.sendMessage(
-      opponent.telegram_id,
-      `Игрок ${me.username || me.telegram_id} зарегистрировал игру со счётом ${created.author_score}:${created.opponent_score}. Подтвердить?`,
-      { reply_markup: kb },
-    );
-  } catch (err) {
-    console.error('Failed to send notification to opponent:', err);
-  }
-
-  res.json({ match: created });
+  res.json({ match: created, notified: notifyResult.ok, notifyError: notifyResult.error });
 });
 
 // Confirmation from opponent via API (optional)

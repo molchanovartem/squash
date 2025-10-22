@@ -101,8 +101,9 @@ async function renderHome(){
     const opponentTelegramId = selectedTelegramId;
     if (!opponentTelegramId) return toast('Выберите соперника из списка');
     try {
-      await api('/api/matches', { method:'POST', body: JSON.stringify({ opponentTelegramId, score })});
-      toast('Заявка отправлена сопернику в чате');
+      const res = await api('/api/matches', { method:'POST', body: JSON.stringify({ opponentTelegramId, score })});
+      if (res.notified) toast('Заявка отправлена сопернику в чате');
+      else toast('Заявка зарегистрирована, но уведомление не доставлено');
       input.value = '';
       selectedTelegramId = null;
     } catch (e){ toast('Ошибка: '+e.message); }

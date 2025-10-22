@@ -26,6 +26,66 @@ export { bot };
 // simple in-memory session (per chat)
 bot.use(session({ initial: () => ({ step: null, opponentTgId: null }) }));
 
+// Level selection config
+const LEVEL_DOC_LINK = 'https://docs.google.com/spreadsheets/d/1HO6hpO5zOoJgUpUcZefDZudXeZ-dPLDCF_LORwltFVo/htmlview#';
+const INITIAL_BY_LEVEL = {
+  Beginner: { rating: 1200, rd: 350 },
+  M3: { rating: 1400, rd: 300 },
+  M2: { rating: 1600, rd: 250 },
+  M1: { rating: 1800, rd: 150 },
+  Elite: { rating: 2000, rd: 100 },
+};
+
+function buildLevelKeyboard() {
+  return new InlineKeyboard()
+    .text('Beginner', 'level:Beginner')
+    .text('M3', 'level:M3')
+    .row()
+    .text('M2', 'level:M2')
+    .text('M1', 'level:M1')
+    .row()
+    .text('Elite', 'level:Elite');
+}
+
+// First-time user gate: ask for level and set initial rating/RD
+bot.use(async (ctx, next) => {
+  if (!ctx.from) return next();
+
+  // Allow level selection callbacks to pass through
+  const isLevelSelectionCb = Boolean(ctx.callbackQuery?.data?.startsWith('level:'));
+
+  const existing = getPlayerByTelegram(ctx.from.id);
+  const notExists = !existing;
+  const looksUninitialized =
+    !!existing &&
+    existing.rating === 1500 &&
+    existing.rd === 350 &&
+    existing.vol === 0.06 &&
+    existing.created_at === existing.updated_at;
+
+  if (notExists || looksUninitialized) {
+    if (notExists) {
+      // Create a placeholder record with DB defaults; will be overwritten after level selection
+      getOrCreatePlayerByTelegram(ctx.from);
+    }
+
+    if (!isLevelSelectionCb) {
+      if (ctx.session.step !== 'await_level') {
+        ctx.session.step = 'await_level';
+        await ctx.reply(
+          `Выберите ваш уровень: Beginner, M3, M2, M1 или Elite.\nПодробности про уровни: ${LEVEL_DOC_LINK}`,
+          { reply_markup: buildLevelKeyboard() },
+        );
+      } else if (ctx.message?.text) {
+        await ctx.reply('Пожалуйста, выберите уровень кнопками выше.');
+      }
+      return; // Block other handlers until level is chosen
+    }
+  }
+
+  await next();
+});
+
 // Persistent reply keyboard
 const mainKeyboard = new Keyboard()
   .text('Зарегистрировать игру')
@@ -35,6 +95,26 @@ const mainKeyboard = new Keyboard()
   .row()
   .text('Помощь')
   .resized();
+
+// Handle level selection
+bot.callbackQuery(/^level:(Beginner|M3|M2|M1|Elite)$/, async (ctx) => {
+  const level = ctx.match[1];
+  const init = INITIAL_BY_LEVEL[level];
+  const me = getOrCreatePlayerByTelegram(ctx.from);
+
+  upsertPlayerRating(me.id, { rating: init.rating, rd: init.rd, vol: me.vol });
+  ctx.session.step = null;
+
+  try {
+    await ctx.editMessageText(`Уровень выбран: ${level}. Стартовый рейтинг ${init.rating} (RD ${init.rd}).`);
+  } catch {}
+
+  await ctx.answerCallbackQuery({ text: `Выбран ${level}` });
+  await ctx.reply(
+    `Готово. Вы зарегистрированы. Текущий рейтинг: ${init.rating.toFixed(2)} (RD ${init.rd.toFixed(1)})`,
+    { reply_markup: mainKeyboard },
+  );
+});
 
 // Set commands visible in Telegram menu (ASCII-only as per Telegram rules)
 bot.api
