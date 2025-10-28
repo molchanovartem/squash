@@ -14,8 +14,36 @@ const apiKey = process.env.OPENAI_API_KEY;
 const openai = apiKey ? createOpenAI({ apiKey }) : null;
 const model = openai ? openai('gpt-4o-mini') : null;
 
+const OPPONENTS_PER_PAGE = 10;
 function formatOpponentTitle(p) {
-  return `${p.username ? '@' + p.username : 'ID ' + p.telegram_id} · ${Math.round(p.rating)}`;
+  const parts = [];
+  if (p.first_name) parts.push(p.first_name);
+  if (p.last_name) parts.push(p.last_name);
+  if (p.username) parts.push('@' + p.username);
+  const title = parts.join(' ').trim();
+  return title || `ID ${p.telegram_id}`;
+}
+
+function buildOpponentsKeyboard(players, page) {
+  const totalPages = Math.max(1, Math.ceil(players.length / OPPONENTS_PER_PAGE));
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+  const start = safePage * OPPONENTS_PER_PAGE;
+  const slice = players.slice(start, start + OPPONENTS_PER_PAGE);
+
+  const kb = new InlineKeyboard();
+  for (const p of slice) kb.text(formatOpponentTitle(p), `opponent:${p.telegram_id}`).row();
+  if (totalPages > 1) {
+    const prevPage = (safePage - 1 + totalPages) % totalPages;
+    const nextPage = (safePage + 1) % totalPages;
+    kb.text('◀️', `opponents:page:${prevPage}`)
+      .text(`${safePage + 1}/${totalPages}`, 'noop')
+      .text('▶️', `opponents:page:${nextPage}`);
+  }
+  return kb;
+}
+
+function buildOpponentModeKeyboard() {
+  return new InlineKeyboard().text('Показать список', 'opponents:mode:list').text('Поиск', 'opponents:mode:search');
 }
 
 export async function handleAgentText(ctx, text) {
@@ -29,21 +57,15 @@ export async function handleAgentText(ctx, text) {
     }
     if (/таблица|топ/.test(t)) {
       const top = db
-        .prepare('SELECT username, telegram_id, rating, rd FROM players ORDER BY rating DESC, id ASC LIMIT 10')
+        .prepare('SELECT username, first_name, last_name, telegram_id, rating, rd FROM players ORDER BY rating DESC, id ASC LIMIT 10')
         .all();
       if (top.length === 0) return void ctx.reply('Пока нет игроков. Нажмите /start');
-      const lines = top.map(
-        (p, i) => `${i + 1}. ${(p.username ? '@' + p.username : 'ID ' + p.telegram_id).padEnd(18)} ${p.rating.toFixed(1)} (RD ${p.rd.toFixed(0)})`,
-      );
+      const lines = top.map((p, i) => `${i + 1}. ${formatOpponentTitle(p)} ${p.rating.toFixed(1)} (RD ${p.rd.toFixed(0)})`);
       await ctx.reply('Топ игроков:\n' + lines.join('\n'));
       return;
     }
     if (/зарегистриру(й|йте)|зарегистрировать\s+игру|игру\s+зарегистриру/.test(t)) {
-      const players = listOtherPlayers(ctx.from.id);
-      if (players.length === 0) return void ctx.reply('Нет доступных соперников. Позовите друзей зарегистрироваться /start');
-      const kb = new InlineKeyboard();
-      for (const p of players) kb.text(formatOpponentTitle(p), `opponent:${p.telegram_id}`).row();
-      await ctx.reply('Выберите соперника:', { reply_markup: kb });
+      await ctx.reply('Как выбрать соперника?', { reply_markup: buildOpponentModeKeyboard() });
       return;
     }
     await ctx.reply('Я помогаю по сквошу: могу зарегистрировать игру, показать рейтинг и таблицу.');
@@ -78,15 +100,8 @@ export async function handleAgentText(ctx, text) {
       description: 'Начать регистрацию игры: показать список соперников и ждать счёт после выбора.',
       inputSchema: jsonSchema({ type: 'object', properties: {}, additionalProperties: false }),
       execute: async () => {
-        const me = getOrCreatePlayerByTelegram(ctx.from);
-        const players = listOtherPlayers(ctx.from.id);
-        if (players.length === 0) {
-          await ctx.reply('Нет доступных соперников. Позовите друзей зарегистрироваться /start');
-          return { ok: false };
-        }
-        const kb = new InlineKeyboard();
-        for (const p of players) kb.text(formatOpponentTitle(p), `opponent:${p.telegram_id}`).row();
-        await ctx.reply('Выберите соперника:', { reply_markup: kb });
+        getOrCreatePlayerByTelegram(ctx.from);
+        await ctx.reply('Как выбрать соперника?', { reply_markup: buildOpponentModeKeyboard() });
         return { ok: true };
       },
     }),
@@ -95,15 +110,13 @@ export async function handleAgentText(ctx, text) {
       inputSchema: jsonSchema({ type: 'object', properties: {}, additionalProperties: false }),
       execute: async () => {
         const top = db
-          .prepare('SELECT username, telegram_id, rating, rd FROM players ORDER BY rating DESC, id ASC LIMIT 10')
+          .prepare('SELECT username, first_name, last_name, telegram_id, rating, rd FROM players ORDER BY rating DESC, id ASC LIMIT 10')
           .all();
         if (top.length === 0) {
           await ctx.reply('Пока нет игроков. Нажмите /start');
           return { leaders: [] };
         }
-        const lines = top.map(
-          (p, i) => `${i + 1}. ${(p.username ? '@' + p.username : 'ID ' + p.telegram_id).padEnd(18)} ${p.rating.toFixed(1)} (RD ${p.rd.toFixed(0)})`,
-        );
+        const lines = top.map((p, i) => `${i + 1}. ${formatOpponentTitle(p)} ${p.rating.toFixed(1)} (RD ${p.rd.toFixed(0)})`);
         await ctx.reply('Топ игроков:\n' + lines.join('\n'));
         return { leaders: top };
       },

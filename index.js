@@ -27,24 +27,19 @@ export { bot };
 bot.use(session({ initial: () => ({ step: null, opponentTgId: null }) }));
 
 // Level selection config
-const LEVEL_DOC_LINK = 'https://docs.google.com/spreadsheets/d/1HO6hpO5zOoJgUpUcZefDZudXeZ-dPLDCF_LORwltFVo/htmlview#';
+// const LEVEL_DOC_LINK = 'https://docs.google.com/spreadsheets/d/1HO6hpO5zOoJgUpUcZefDZudXeZ-dPLDCF_LORwltFVo/htmlview#';
 const INITIAL_BY_LEVEL = {
-  Beginner: { rating: 1200, rd: 350 },
-  M3: { rating: 1400, rd: 300 },
-  M2: { rating: 1600, rd: 250 },
-  M1: { rating: 1800, rd: 150 },
-  Elite: { rating: 2000, rd: 100 },
+  Beginner: { rating: 1200, rd: 300 },
+  C: { rating: 1500, rd: 200 },
+  B: { rating: 1800, rd: 100 },
 };
 
 function buildLevelKeyboard() {
   return new InlineKeyboard()
     .text('Beginner', 'level:Beginner')
-    .text('M3', 'level:M3')
+    .text('C', 'level:C')
     .row()
-    .text('M2', 'level:M2')
-    .text('M1', 'level:M1')
-    .row()
-    .text('Elite', 'level:Elite');
+    .text('B', 'level:B');
 }
 
 // First-time user gate: ask for level and set initial rating/RD
@@ -73,7 +68,7 @@ bot.use(async (ctx, next) => {
       if (ctx.session.step !== 'await_level') {
         ctx.session.step = 'await_level';
         await ctx.reply(
-          `Выберите ваш уровень: Beginner, M3, M2, M1 или Elite.\nПодробности про уровни: ${LEVEL_DOC_LINK}`,
+          `Выберите ваш уровень: Beginner, C или B.`,
           { reply_markup: buildLevelKeyboard() },
         );
       } else if (ctx.message?.text) {
@@ -96,8 +91,120 @@ const mainKeyboard = new Keyboard()
   .text('Помощь')
   .resized();
 
+// Opponents list & pagination
+const OPPONENTS_PER_PAGE = 10;
+function formatOpponentButtonTitle(p) {
+  const parts = [];
+  if (p.first_name) parts.push(p.first_name);
+  if (p.last_name) parts.push(p.last_name);
+  if (p.username) parts.push('@' + p.username);
+  const title = parts.join(' ').trim();
+  return title || `ID ${p.telegram_id}`;
+}
+
+function buildOpponentsKeyboard(players, page, pageCbPrefix = 'opponents:page') {
+  const totalPages = Math.max(1, Math.ceil(players.length / OPPONENTS_PER_PAGE));
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+  const start = safePage * OPPONENTS_PER_PAGE;
+  const slice = players.slice(start, start + OPPONENTS_PER_PAGE);
+
+  const kb = new InlineKeyboard();
+  for (const p of slice) kb.text(formatOpponentButtonTitle(p), `opponent:${p.telegram_id}`).row();
+
+  if (totalPages > 1) {
+    const prevPage = (safePage - 1 + totalPages) % totalPages;
+    const nextPage = (safePage + 1) % totalPages;
+    kb.text('◀️', `${pageCbPrefix}:${prevPage}`)
+      .text(`${safePage + 1}/${totalPages}`, 'noop')
+      .text('▶️', `${pageCbPrefix}:${nextPage}`);
+  }
+  return kb;
+}
+
+async function sendOpponentsPage(ctx, page = 0, edit = false) {
+  const others = listOtherPlayers(ctx.from.id);
+  if (others.length === 0) return ctx.reply('Нет доступных соперников. Позовите друзей зарегистрироваться /start');
+  const kb = buildOpponentsKeyboard(others, page);
+  if (edit) return ctx.editMessageText('Выберите соперника:', { reply_markup: kb });
+  return ctx.reply('Выберите соперника:', { reply_markup: kb });
+}
+
+bot.callbackQuery(/^opponents:page:(\d+)$/, async (ctx) => {
+  const page = Number(ctx.match[1]);
+  try {
+    await sendOpponentsPage(ctx, page, true);
+  } catch (e) {
+    // If message text can't be edited (older message), send a new one
+    await sendOpponentsPage(ctx, page, false);
+  }
+  await ctx.answerCallbackQuery();
+});
+
+bot.callbackQuery(/^noop$/, async (ctx) => ctx.answerCallbackQuery());
+
+// Opponent selection mode (list vs search)
+function buildOpponentModeKeyboard() {
+  return new InlineKeyboard().text('Показать список', 'opponents:mode:list').text('Поиск', 'opponents:mode:search');
+}
+
+async function askOpponentSelectionMode(ctx, edit = false) {
+  const kb = buildOpponentModeKeyboard();
+  const text = 'Как выбрать соперника?';
+  if (edit) return ctx.editMessageText(text, { reply_markup: kb });
+  return ctx.reply(text, { reply_markup: kb });
+}
+
+bot.callbackQuery(/^opponents:mode:list$/, async (ctx) => {
+  try {
+    await sendOpponentsPage(ctx, 0, true);
+  } catch {
+    await sendOpponentsPage(ctx, 0, false);
+  }
+  ctx.session.step = null;
+  await ctx.answerCallbackQuery();
+});
+
+bot.callbackQuery(/^opponents:mode:search$/, async (ctx) => {
+  ctx.session.step = 'await_opponent_search';
+  ctx.session.opponentSearchQ = '';
+  await ctx.editMessageText('Введите имя/фамилию/ник соперника для поиска');
+  await ctx.answerCallbackQuery();
+});
+
+function normalize(s) { return String(s || '').toLowerCase(); }
+function filterPlayersByQuery(players, q) {
+  const qn = normalize(q).replace(/^@/, '');
+  if (!qn) return [];
+  return players.filter((p) => [p.username, p.first_name, p.last_name].map(normalize).some((v) => v.includes(qn)));
+}
+
+async function sendSearchResultsPage(ctx, page = 0, edit = false) {
+  const all = listOtherPlayers(ctx.from.id);
+  const q = ctx.session.opponentSearchQ || '';
+  const results = filterPlayersByQuery(all, q);
+  if (results.length === 0) {
+    return edit
+      ? ctx.editMessageText('Ничего не найдено. Введите другой запрос')
+      : ctx.reply('Ничего не найдено. Введите другой запрос');
+  }
+  const kb = buildOpponentsKeyboard(results, page, 'opponents:search:page');
+  const text = `Результаты поиска: ${q}`;
+  if (edit) return ctx.editMessageText(text, { reply_markup: kb });
+  return ctx.reply(text, { reply_markup: kb });
+}
+
+bot.callbackQuery(/^opponents:search:page:(\d+)$/, async (ctx) => {
+  const page = Number(ctx.match[1]);
+  try {
+    await sendSearchResultsPage(ctx, page, true);
+  } catch {
+    await sendSearchResultsPage(ctx, page, false);
+  }
+  await ctx.answerCallbackQuery();
+});
+
 // Handle level selection
-bot.callbackQuery(/^level:(Beginner|M3|M2|M1|Elite)$/, async (ctx) => {
+bot.callbackQuery(/^level:(Beginner|C|B)$/, async (ctx) => {
   const level = ctx.match[1];
   const init = INITIAL_BY_LEVEL[level];
   const me = getOrCreatePlayerByTelegram(ctx.from);
@@ -180,45 +287,33 @@ bot.hears(/^помощь$/i, async (ctx) => {
 
 // Start register game flow
 bot.command(['register', 'Зарегистрировать_игру', 'register_game', 'зарегистрировать_игру', 'Зарегестрировать_игру', 'зарегестрировать_игру'], async (ctx) => {
-  const me = getOrCreatePlayerByTelegram(ctx.from);
-  const others = listOtherPlayers(ctx.from.id);
-  if (others.length === 0) return ctx.reply('Нет доступных соперников. Позовите друзей зарегистрироваться /start');
-
-  const kb = new InlineKeyboard();
-  for (const p of others) {
-    const title = p.username ? `@${p.username}` : `ID ${p.telegram_id}`;
-    kb.text(`${title} · ${Math.round(p.rating)}`, `opponent:${p.telegram_id}`).row();
-  }
-  await ctx.reply('Выберите соперника:', { reply_markup: kb });
+  getOrCreatePlayerByTelegram(ctx.from);
+  await askOpponentSelectionMode(ctx, false);
 });
 
 // Plain text triggers without slash
 bot.hears(/^(зарегистрировать игру|зарегистрировать_игру|зарегестрировать игру|зарегестрировать_игру)$/i, async (ctx) => {
-  const me = getOrCreatePlayerByTelegram(ctx.from);
-  const others = listOtherPlayers(ctx.from.id);
-  if (others.length === 0) return ctx.reply('Нет доступных соперников. Позовите друзей зарегистрироваться /start');
-
-  const kb = new InlineKeyboard();
-  for (const p of others) {
-    const title = p.username ? `@${p.username}` : `ID ${p.telegram_id}`;
-    kb.text(`${title} · ${Math.round(p.rating)}`, `opponent:${p.telegram_id}`).row();
-  }
-  await ctx.reply('Выберите соперника:', { reply_markup: kb });
+  getOrCreatePlayerByTelegram(ctx.from);
+  await askOpponentSelectionMode(ctx, false);
 });
 
 // Leaderboard
 bot.command(['leaders', 'leaderboard', 'таблица', 'топ'], async (ctx) => {
-  const top = db.prepare('SELECT username, telegram_id, rating, rd FROM players ORDER BY rating DESC, id ASC LIMIT 10').all();
+  const top = db
+    .prepare('SELECT username, first_name, last_name, telegram_id, rating, rd FROM players ORDER BY rating DESC, id ASC LIMIT 10')
+    .all();
   if (top.length === 0) return ctx.reply('Пока нет игроков. Нажмите /start');
-  const lines = top.map((p, i) => `${i + 1}. ${(p.username ? '@' + p.username : 'ID ' + p.telegram_id).padEnd(18)} ${p.rating.toFixed(1)} (RD ${p.rd.toFixed(0)})`);
+  const lines = top.map((p, i) => `${i + 1}. ${formatOpponentButtonTitle(p)} ${p.rating.toFixed(1)} (RD ${p.rd.toFixed(0)})`);
   return ctx.reply('Топ игроков:\n' + lines.join('\n'));
 });
 
 // Leaderboard plain text triggers
 bot.hears(/^(таблица|топ)$/i, async (ctx) => {
-  const top = db.prepare('SELECT username, telegram_id, rating, rd FROM players ORDER BY rating DESC, id ASC LIMIT 10').all();
+  const top = db
+    .prepare('SELECT username, first_name, last_name, telegram_id, rating, rd FROM players ORDER BY rating DESC, id ASC LIMIT 10')
+    .all();
   if (top.length === 0) return ctx.reply('Пока нет игроков. Нажмите /start');
-  const lines = top.map((p, i) => `${i + 1}. ${(p.username ? '@' + p.username : 'ID ' + p.telegram_id).padEnd(18)} ${p.rating.toFixed(1)} (RD ${p.rd.toFixed(0)})`);
+  const lines = top.map((p, i) => `${i + 1}. ${formatOpponentButtonTitle(p)} ${p.rating.toFixed(1)} (RD ${p.rd.toFixed(0)})`);
   return ctx.reply('Топ игроков:\n' + lines.join('\n'));
 });
 
@@ -236,7 +331,7 @@ bot.callbackQuery(/^opponent:(\d+)$/, async (ctx) => {
 
   ctx.session.opponentTgId = opponentTgId;
   ctx.session.step = 'await_score';
-  await ctx.editMessageText(`Соперник: ${opponent.username || opponent.telegram_id}. Введите счёт в формате 3:1`);
+  await ctx.editMessageText(`Соперник: ${opponent.username || opponent.telegram_id}. Введите счёт в формате 3:1 (первая цифра — ваша).`);
 });
 
 // Parse a score like 1:2
@@ -247,6 +342,14 @@ const parseScore = (text) => {
 };
 
 bot.on('message:text', async (ctx) => {
+  // Search flow: capture query and show results
+  if (ctx.session.step === 'await_opponent_search') {
+    const q = (ctx.message.text || '').trim();
+    ctx.session.opponentSearchQ = q;
+    await sendSearchResultsPage(ctx, 0, false);
+    return;
+  }
+
   // If we're awaiting score, handle score; otherwise route to AI agent
   if (ctx.session.step === 'await_score' && ctx.session.opponentTgId) {
     const parsed = parseScore(ctx.message.text);
